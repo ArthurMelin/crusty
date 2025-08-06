@@ -2,6 +2,7 @@ pub struct Transform {
     matrix: [[f64; 4]; 4],
     invmatrix: [[f64; 4]; 4],
 }
+
 impl Transform {
     pub const fn new() -> Transform {
         Self::identity()
@@ -100,6 +101,7 @@ impl Transform {
 
         (x, y, z)
     }
+
     #[inline]
     pub const fn apply_notranslate(&self, to: (f64, f64, f64)) -> (f64, f64, f64) {
         let [x, y, z, _] = matmul414(&self.matrix, &[to.0, to.1, to.2, 0.0]);

@@ -1,3 +1,4 @@
+mod objects;
 mod tile;
 mod transform;
 
@@ -7,15 +8,20 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Instant;
+
+use objects::Object;
 use tile::Tile;
 use transform::Transform;
 
-const OUTPUT_W: u32 = 1;
-const OUTPUT_H: u32 = 1;
-const THREADS: u32 = 1;
+const OUTPUT_W: u32 = 1920;
+const OUTPUT_H: u32 = 1080;
+const THREADS: u32 = 8;
 const TILE_SIZE: u32 = 16;
+const CAMERA_FOV: f64 = 90.;
+const CAMERA_NEAR: f64 = 10.;
 
 pub struct Raytracer {
+    objects: Vec<Object>,
     output: Vec<AtomicU8>,
     output_sz: (u32, u32),
     progress: AtomicU32,
@@ -23,8 +29,18 @@ pub struct Raytracer {
     tiles: Mutex<VecDeque<Tile>>,
 }
 
-struct Hit {}
+#[derive(Debug)]
+struct Ray {
+    origin: (f64, f64, f64),
+    direction: (f64, f64, f64),
+}
 
+#[derive(Debug)]
+struct Hit {
+    distance: f64,
+}
+
+#[derive(Debug)]
 struct RGBA {
     r: u8,
     g: u8,
@@ -34,12 +50,16 @@ struct RGBA {
 
 impl Raytracer {
     pub fn new() -> Arc<Self> {
-        // TODO load objects and settings from scene file
+        // TODO load objects and settings from a scene file
+        let mut objects = Vec::<Object>::new();
+        objects.push(Object::new().unwrap());
+
         let output_sz = (OUTPUT_W, OUTPUT_H);
 
         Arc::new(Self {
+            objects,
             output: vec![0u8; (4 * output_sz.0 * output_sz.1) as usize].into_iter().map(AtomicU8::new).collect(),
-            output_sz: output_sz,
+            output_sz,
             stop: AtomicBool::new(false),
             progress: AtomicU32::new(0),
             tiles: Mutex::new(VecDeque::new()),
@@ -54,7 +74,7 @@ impl Raytracer {
                     let mut tiles = self.tiles.lock().unwrap();
                     tiles.clear();
                     for tile in tile::hilbert_tiles(self.output_sz.0, self.output_sz.1, TILE_SIZE) {
-                        tiles.push_back(tile);
+                        tiles.push_front(tile);
                     }
                 }
 
@@ -140,18 +160,29 @@ impl Raytracer {
 
     fn raytrace(&self, x: u32, y: u32) -> Option<Hit> {
         let camera_tf = Transform::new()
-            .translate(23.4, 51.3, 42.84)
-            .rotate(23.0, 90.0, 70.0)
-            .scale(2., 3., 4.);
-        let ray = camera_tf.apply((1., 2., 3.));
-        dbg!(ray);
-        let ray = camera_tf.inverse().apply(ray);
-        dbg!(ray);
-        Some(Hit {})
+            .translate(0.0, 0.0, 20.0)
+            .rotate(180.0, 0.0, 0.0)
+            .scale(1.0, 1.0, 1.0);
+
+        let ray = Ray {
+            origin: camera_tf.apply((0., 0., 0.)),
+            direction: camera_tf.apply_notranslate(vec3norm((
+                (2. * (x as f64 + 0.5) / self.output_sz.0 as f64 - 1.) *
+                    (CAMERA_FOV.to_radians() / 2.).tan() *
+                    (self.output_sz.0 as f64 / self.output_sz.1 as f64),
+                (1. - 2. * (y as f64 + 0.5) / self.output_sz.1 as f64) *
+                    (CAMERA_FOV.to_radians() / 2.).tan(),
+                CAMERA_NEAR,
+            ))),
+        };
+
+        self.objects.iter().find_map(|obj| { obj.intersect(&ray) })
     }
 
     fn render_color(&self, hit: &Hit) -> RGBA {
-        RGBA::new(255, 255, 255, 255)
+        // TODO
+        let c = ((20.5 - hit.distance) * 150.0) as u8;
+        RGBA::new(c, c, c, 255)
     }
 }
 
@@ -160,4 +191,10 @@ impl RGBA {
     fn new(r: u8, g: u8, b: u8, a: u8) -> RGBA {
         RGBA { r, g, b, a }
     }
+}
+
+#[inline]
+pub fn vec3norm(v: (f64, f64, f64)) -> (f64, f64, f64) {
+    let mag = (v.0 * v.0 + v.1 * v.1 + v.2 * v.2).sqrt();
+    (v.0 / mag, v.1 / mag, v.2 / mag)
 }
