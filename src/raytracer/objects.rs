@@ -1,36 +1,54 @@
 use std::collections::HashMap;
+use std::f64::consts::PI;
 use std::sync::LazyLock;
 
-use crate::raytracer::{Hit, Ray, Transform};
+use crate::raytracer::{Ray, Transform};
+use crate::raytracer::utils::{vec3add, vec3norm, vec3scale};
 
 pub struct Object {
     transform: Transform,
-    inner: Box<dyn ObjectType + Send + Sync>
+    inner: Box<dyn ObjectType + Send + Sync>,
+}
+
+pub struct ObjectHit<'a> {
+    pub object: &'a Object,
+    pub hit: Hit,
+}
+
+pub struct Hit {
+    pub distance: f64,
+    pub intersection: (f64, f64, f64),
+    pub normal: (f64, f64, f64),
+    pub uv: (f64, f64),
 }
 
 impl Object {
-    pub fn new() -> Result<Object, &'static str> {
+    pub fn new(type_: &'static str, transform: Transform) -> Result<Object, &'static str> {
         // TODO
-        match OBJECT_TYPES.get("cone") {
-            Some(object_new_fn) => {
-                Ok(
-                    Object {
-                        transform: Transform::identity()
-                            .rotate(-60.0, 0.0, 0.0),
-                        inner: object_new_fn(),
-                    }
-                )
-            }
+        match OBJECT_TYPES.get(type_) {
+            Some(object_new_fn) => Ok(Object {
+                transform,
+                inner: object_new_fn(),
+            }),
             _ => Err("object type not found"),
         }
     }
 
-    pub fn intersect(&self, ray: &Ray) -> Option<Hit> {
+    pub fn intersect(&self, ray: &Ray) -> Option<ObjectHit> {
         let tmp = Ray {
             origin: self.transform.inverse().apply(ray.origin),
             direction: self.transform.inverse().apply_notranslate(ray.direction),
         };
-        self.inner.intersect(&tmp)
+        match self.inner.intersect(&tmp) {
+            Some(hit) => {
+                let mut hit = hit;
+                hit.intersection = self.transform.apply(hit.intersection);
+                hit.normal = vec3norm(self.transform.apply_notranslate(hit.normal));
+
+                Some(ObjectHit { object: self, hit })
+            }
+            _ => None,
+        }
     }
 }
 
@@ -38,21 +56,24 @@ pub trait ObjectType {
     fn intersect(&self, ray: &Ray) -> Option<Hit>;
 }
 
-static OBJECT_TYPES: LazyLock<HashMap<String, fn() -> Box<dyn ObjectType + Sync + Send>>> = LazyLock::new(|| {
-    HashMap::from([
-        ("cone".to_string(), (|| { Box::new(Cone) }) as fn() -> Box<dyn ObjectType + Sync + Send>),
-        ("cube".to_string(), || { Box::new(Cube) }),
-        ("cylinder".to_string(), || { Box::new(Cylinder) }),
-        ("plane".to_string(), || { Box::new(Plane) }),
-        ("sphere".to_string(), || { Box::new(Sphere) }),
-    ])
-});
+static OBJECT_TYPES: LazyLock<HashMap<String, fn() -> Box<dyn ObjectType + Sync + Send>>> =
+    LazyLock::new(|| {
+        HashMap::from([
+            ("cone".to_string(), (|| { Box::new(Cone) }) as fn() -> Box<dyn ObjectType + Sync + Send>),
+            ("cube".to_string(), || { Box::new(Cube) }),
+            ("cylinder".to_string(), || { Box::new(Cylinder) }),
+            ("plane".to_string(), || { Box::new(Plane) }),
+            ("sphere".to_string(), || { Box::new(Sphere) }),
+        ])
+    });
 
 struct Cone;
 struct Cube;
 struct Cylinder;
 struct Plane;
 struct Sphere;
+
+const HALF_EPSILON: f64 = 0.49999999;
 
 impl ObjectType for Cone {
     fn intersect(&self, ray: &Ray) -> Option<Hit> {
@@ -63,13 +84,13 @@ impl ObjectType for Cone {
                     ray.direction.2 * ray.direction.2 / 4.0,
                 2.0 * (
                     ray.direction.0 * ray.origin.0 +
-                    ray.direction.1 * ray.origin.1 -
-                    ray.direction.2 * (ray.origin.2 + 0.5) / 4.0),
+                    ray.direction.1 * ray.origin.1 +
+                    ray.direction.2 * (0.5 - ray.origin.2) / 4.0),
                 ray.origin.0 * ray.origin.0 +
                     ray.origin.1 * ray.origin.1 -
-                    (ray.origin.2 + 0.5).powf(2.0) / 4.0,
+                    (0.5 - ray.origin.2) * (0.5 - ray.origin.2) / 4.0,
             ),
-            -(ray.origin.2 - 0.5) / ray.direction.2,
+            -(0.5 + ray.origin.2) / ray.direction.2,
         ];
 
         if (ray.direction.2 * dists[0] + ray.origin.2).abs() > 0.5 {
@@ -87,7 +108,23 @@ impl ObjectType for Cone {
         }
 
         let distance = *distance.unwrap();
-        Some(Hit { distance })
+        let intersection = intersection(ray, distance);
+        let normal = if intersection.2 >= HALF_EPSILON {
+            (0.0, 0.0, 1.0)
+        } else {
+            vec3norm((intersection.0, intersection.1, intersection.2))
+        };
+        let uv = (
+            0.5 - f64::atan2(intersection.0, intersection.1) / (2.0 * PI),
+            0.5 - intersection.2,
+        );
+
+        Some(Hit {
+            distance,
+            intersection,
+            normal,
+            uv,
+        })
     }
 }
 
@@ -104,7 +141,24 @@ impl ObjectType for Cube {
             return None;
         }
 
-        Some(Hit { distance: tmin })
+        let distance = tmin;
+        let intersection = intersection(ray, distance);
+        let (normal, uv) = match intersection {
+            (x, y, z) if x <= -HALF_EPSILON => ((-1.0, 0.0, 0.0), (0.5 - y, z + 0.5)),
+            (x, y, z) if x >= HALF_EPSILON => ((1.0, 0.0, 0.0), (y + 0.5, z + 0.5)),
+            (x, y, z) if y <= -HALF_EPSILON => ((0.0, -1.0, 0.0), (x + 0.5, z + 0.5)),
+            (x, y, z) if y >= HALF_EPSILON => ((0.0, 1.0, 0.0), (0.5 - x, z + 0.5)),
+            (x, y, z) if z <= -HALF_EPSILON => ((0.0, 0.0, -1.0), (x + 0.5, 0.5 - y)),
+            (x, y, z) if z >= HALF_EPSILON => ((0.0, 0.0, 1.0), (x + 0.5, y + 0.5)),
+            _ => unreachable!(),
+        };
+
+        Some(Hit {
+            distance,
+            intersection,
+            normal,
+            uv,
+        })
     }
 }
 
@@ -119,7 +173,7 @@ impl ObjectType for Cylinder {
                     ray.direction.1 * ray.origin.1),
                 ray.origin.0 * ray.origin.0 +
                     ray.origin.1 * ray.origin.1 -
-                    1.0,
+                    0.25,
             ),
             -(ray.origin.2 - 0.5) / ray.direction.2,
             -(ray.origin.2 + 0.5) / ray.direction.2,
@@ -131,7 +185,7 @@ impl ObjectType for Cylinder {
         for i in 1..=2 {
             if ray.direction.2.abs() < f64::EPSILON ||
                 (dists[i] * ray.direction.0 + ray.origin.0).powf(2.0) +
-                (dists[i] * ray.direction.1 + ray.origin.1).powf(2.0) > 1.0 {
+                (dists[i] * ray.direction.1 + ray.origin.1).powf(2.0) > 0.25 {
                 dists[i] = f64::NAN;
             }
         }
@@ -142,7 +196,25 @@ impl ObjectType for Cylinder {
         }
 
         let distance = *distance.unwrap();
-        Some(Hit { distance })
+        let intersection = intersection(ray, distance);
+        let normal = if intersection.2 <= -HALF_EPSILON {
+            (0.0, 0.0, -1.0)
+        } else if intersection.2 >= HALF_EPSILON {
+            (0.0, 0.0, 1.0)
+        } else {
+            vec3norm((intersection.0, intersection.1, 0.0))
+        };
+        let uv = (
+            0.5 - f64::atan2(intersection.0, intersection.1) / (2.0 * PI),
+            intersection.2 + 0.5,
+        );
+
+        Some(Hit {
+            distance,
+            intersection,
+            normal,
+            uv,
+        })
     }
 }
 
@@ -156,7 +228,16 @@ impl ObjectType for Plane {
             (ray.origin.1 + ray.direction.1 * distance).abs() > 0.5 {
             return None;
         }
-        Some(Hit { distance })
+        let intersection = intersection(ray, distance);
+        let normal = (0.0, 0.0, if intersection.2 < 0.0 { 1.0 } else { -1.0 });
+        let uv = (intersection.0 + 0.5, intersection.1 + 0.5);
+
+        Some(Hit {
+            distance,
+            intersection,
+            normal,
+            uv,
+        })
     }
 }
 
@@ -173,12 +254,24 @@ impl ObjectType for Sphere {
             ray.origin.0 * ray.origin.0 +
                 ray.origin.1 * ray.origin.1 +
                 ray.origin.2 * ray.origin.2 -
-                1.0,
+                0.25,
         );
         if distance.is_nan() || distance <= 0.0 {
             return None;
         }
-        Some(Hit { distance })
+        let intersection = intersection(ray, distance);
+        let normal = vec3norm(intersection);
+        let uv = (
+            0.5 - f64::atan2(normal.0, normal.1) / (2.0 * PI),
+            normal.2 * 0.5 + 0.5,
+        );
+
+        Some(Hit {
+            distance,
+            intersection,
+            normal,
+            uv,
+        })
     }
 }
 
@@ -191,6 +284,10 @@ fn solve_linear(a: f64, b: f64, c: f64) -> f64 {
             (-b - delta.sqrt()) / (2.0 * a),
         ),
         0.0.. => -b / (2.0 * a),
-        _ => { f64::NAN },
+        _ => f64::NAN,
     }
+}
+
+fn intersection(ray: &Ray, distance: f64) -> (f64, f64, f64) {
+    vec3add(vec3scale(ray.direction, distance), ray.origin)
 }

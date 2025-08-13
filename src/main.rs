@@ -5,7 +5,7 @@ use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
-use sdl2::render::BlendMode;
+use sdl2::render::{BlendMode, ScaleMode};
 
 fn main() {
     let raytracer = Raytracer::new();
@@ -35,10 +35,11 @@ fn main() {
         )
         .unwrap();
     texture.set_blend_mode(BlendMode::Blend);
+    texture.set_scale_mode(ScaleMode::Linear);
 
     let mut window_sz = canvas.output_size().unwrap();
-    let mut pan = (0., 0.);
-    let mut zoom = 0.;
+    let mut pan = (0.0, 0.0);
+    let mut zoom = 0.0;
 
     // Main thread window event loop / drawing
     let mut event_pump = sdl.event_pump().unwrap();
@@ -53,15 +54,15 @@ fn main() {
                 }
                 Event::MouseWheel { precise_y, .. } => {
                     let old_zoom = zoom;
-                    zoom = (zoom + precise_y as f64 / 4.).clamp(-4., 4.);
+                    zoom = (zoom + precise_y as f64 / 4.0).clamp(-4.0, 4.0);
 
                     let delta = 2f64.powf(zoom) - 2f64.powf(old_zoom);
-                    pan.0 -= delta / 2. * window_sz.0 as f64;
-                    pan.1 -= delta / 2. * window_sz.1 as f64;
+                    pan.0 -= delta / 2.0 * window_sz.0 as f64;
+                    pan.1 -= delta / 2.0 * window_sz.1 as f64;
                 }
                 Event::KeyDown { keycode: Some(Keycode::R), .. } => {
-                    pan = (0., 0.);
-                    zoom = 0.;
+                    pan = (0.0, 0.0);
+                    zoom = 0.0;
                 }
                 Event::KeyDown { keycode: Some(Keycode::Escape), .. } |
                 Event::Quit { .. } => {
@@ -88,8 +89,8 @@ fn main() {
             (window_sz.0, output_sz.1 * window_sz.0 / output_sz.0)
         };
         let display_pan = (
-            (window_sz.0 - display_sz.0) / 2.,
-            (window_sz.1 - display_sz.1) / 2.,
+            (window_sz.0 - display_sz.0) / 2.0,
+            (window_sz.1 - display_sz.1) / 2.0,
         );
         let r = Rect::new(
             (pan.0 + display_pan.0) as i32,

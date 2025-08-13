@@ -1,6 +1,7 @@
 mod objects;
 mod tile;
 mod transform;
+mod utils;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
@@ -9,16 +10,20 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use objects::Object;
+use objects::{Object, ObjectHit};
 use tile::Tile;
 use transform::Transform;
+use utils::vec3norm;
 
-const OUTPUT_W: u32 = 1920;
-const OUTPUT_H: u32 = 1080;
+// const OUTPUT_W: u32 = 16;
+// const OUTPUT_H: u32 = 9;
+// const THREADS: u32 = 1;
+const OUTPUT_W: u32 = 2560;
+const OUTPUT_H: u32 = 1440;
 const THREADS: u32 = 8;
 const TILE_SIZE: u32 = 16;
-const CAMERA_FOV: f64 = 90.;
-const CAMERA_NEAR: f64 = 10.;
+const CAMERA_FOV: f64 = 90.0;
+const CAMERA_NEAR: f64 = 10.0;
 
 pub struct Raytracer {
     objects: Vec<Object>,
@@ -29,18 +34,11 @@ pub struct Raytracer {
     tiles: Mutex<VecDeque<Tile>>,
 }
 
-#[derive(Debug)]
 struct Ray {
     origin: (f64, f64, f64),
     direction: (f64, f64, f64),
 }
 
-#[derive(Debug)]
-struct Hit {
-    distance: f64,
-}
-
-#[derive(Debug)]
 struct RGBA {
     r: u8,
     g: u8,
@@ -52,7 +50,12 @@ impl Raytracer {
     pub fn new() -> Arc<Self> {
         // TODO load objects and settings from a scene file
         let mut objects = Vec::<Object>::new();
-        objects.push(Object::new().unwrap());
+
+        objects.push(Object::new("plane", Transform::new().scale(10.0, 10.0, 1.0)).unwrap());
+        objects.push(Object::new("cube", Transform::new().translate(-3.0, 0.0, 0.5)).unwrap());
+        objects.push(Object::new("sphere", Transform::new().translate(-1.0, 0.0, 0.5)).unwrap());
+        objects.push(Object::new("cylinder", Transform::new().translate(1.0, 0.0, 0.5)).unwrap());
+        objects.push(Object::new("cone", Transform::new().translate(3.0, 0.0, 0.5)).unwrap());
 
         let output_sz = (OUTPUT_W, OUTPUT_H);
 
@@ -158,31 +161,33 @@ impl Raytracer {
         }
     }
 
-    fn raytrace(&self, x: u32, y: u32) -> Option<Hit> {
+    fn raytrace(&self, x: u32, y: u32) -> Option<ObjectHit> {
         let camera_tf = Transform::new()
-            .translate(0.0, 0.0, 20.0)
-            .rotate(180.0, 0.0, 0.0)
-            .scale(1.0, 1.0, 1.0);
+            .translate(0.0, -30.0, 10.0)
+            .rotate(-18.0, 0.0, 0.0);
 
         let ray = Ray {
-            origin: camera_tf.apply((0., 0., 0.)),
+            origin: camera_tf.apply((0.0, 0.0, 0.0)),
             direction: camera_tf.apply_notranslate(vec3norm((
-                (2. * (x as f64 + 0.5) / self.output_sz.0 as f64 - 1.) *
-                    (CAMERA_FOV.to_radians() / 2.).tan() *
+                (2.0 * (x as f64 + 0.5) / self.output_sz.0 as f64 - 1.0) *
+                    (CAMERA_FOV.to_radians() / 2.0).tan() *
                     (self.output_sz.0 as f64 / self.output_sz.1 as f64),
-                (1. - 2. * (y as f64 + 0.5) / self.output_sz.1 as f64) *
-                    (CAMERA_FOV.to_radians() / 2.).tan(),
                 CAMERA_NEAR,
+                (1.0 - 2.0 * (y as f64 + 0.5) / self.output_sz.1 as f64) *
+                    (CAMERA_FOV.to_radians() / 2.0).tan(),
             ))),
         };
 
-        self.objects.iter().find_map(|obj| { obj.intersect(&ray) })
+        self.objects.iter().filter_map(|obj| { obj.intersect(&ray) }).min_by(|a, b| a.hit.distance.total_cmp(&b.hit.distance))
     }
 
-    fn render_color(&self, hit: &Hit) -> RGBA {
+    fn render_color(&self, oh: &ObjectHit) -> RGBA {
         // TODO
-        let c = ((20.5 - hit.distance) * 150.0) as u8;
-        RGBA::new(c, c, c, 255)
+        if ((oh.hit.uv.0 * 20.0) as u8 % 2) ^ ((oh.hit.uv.1 * 20.0) as u8 % 2) == 0 {
+            RGBA::new((oh.hit.uv.0 * 256.0) as u8, 0, (oh.hit.uv.1 * 256.0) as u8, 255)
+        } else {
+            RGBA::new(0, 0, 0, 255)
+        }
     }
 }
 
@@ -191,10 +196,4 @@ impl RGBA {
     fn new(r: u8, g: u8, b: u8, a: u8) -> RGBA {
         RGBA { r, g, b, a }
     }
-}
-
-#[inline]
-pub fn vec3norm(v: (f64, f64, f64)) -> (f64, f64, f64) {
-    let mag = (v.0 * v.0 + v.1 * v.1 + v.2 * v.2).sqrt();
-    (v.0 / mag, v.1 / mag, v.2 / mag)
 }
