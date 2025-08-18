@@ -9,7 +9,7 @@ use sdl2::render::{BlendMode, ScaleMode};
 
 fn main() {
     let raytracer = Raytracer::new();
-    let render_thread = raytracer.clone().start();
+    let render_thread = raytracer.start();
 
     let sdl = sdl2::init().unwrap();
     let sdl_video = sdl.video().unwrap();

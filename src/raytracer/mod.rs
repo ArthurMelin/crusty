@@ -34,6 +34,7 @@ pub struct Raytracer {
     tiles: Mutex<VecDeque<Tile>>,
 }
 
+#[derive(Clone, Copy)]
 struct Ray {
     origin: (f64, f64, f64),
     direction: (f64, f64, f64),
@@ -69,14 +70,15 @@ impl Raytracer {
         })
     }
 
-    pub fn start(self: Arc<Self>) -> JoinHandle<()> {
+    pub fn start(self: &Arc<Self>) -> JoinHandle<()> {
+        let clone = self.clone();
         thread::Builder::new()
             .name("Raytracer".to_string())
             .spawn(move || {
                 {
-                    let mut tiles = self.tiles.lock().unwrap();
+                    let mut tiles = clone.tiles.lock().unwrap();
                     tiles.clear();
-                    for tile in tile::hilbert_tiles(self.output_sz.0, self.output_sz.1, TILE_SIZE) {
+                    for tile in tile::hilbert_tiles(clone.output_sz.0, clone.output_sz.1, TILE_SIZE) {
                         tiles.push_front(tile);
                     }
                 }
@@ -85,11 +87,11 @@ impl Raytracer {
                 let start = Instant::now();
 
                 let threads = (0..THREADS)
-                    .map(|i| self.clone().start_worker(i + 1))
+                    .map(|i| clone.start_worker(i + 1))
                     .collect::<Vec<JoinHandle<()>>>();
                 threads.into_iter().for_each(|t| t.join().unwrap());
 
-                if self.stop.load(Ordering::Relaxed) {
+                if clone.stop.load(Ordering::Relaxed) {
                     println!("Render cancelled");
                 } else {
                     let end = Instant::now();
@@ -100,17 +102,18 @@ impl Raytracer {
             .unwrap()
     }
 
-    fn start_worker(self: Arc<Self>, i: u32) -> JoinHandle<()> {
+    fn start_worker(self: &Arc<Self>, i: u32) -> JoinHandle<()> {
+        let clone = self.clone();
         thread::Builder::new()
             .name(format!("RT-Worker-{i}").to_string())
             .spawn(move || {
                 loop {
-                    if self.stop.load(Ordering::Relaxed) {
+                    if clone.stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    let tile = self.tiles.lock().unwrap().pop_front();
+                    let tile = clone.tiles.lock().unwrap().pop_front();
                     match tile {
-                        Some(tile) => self.work(tile),
+                        Some(tile) => clone.work(tile),
                         None => break,
                     }
                 }
@@ -178,7 +181,9 @@ impl Raytracer {
             ))),
         };
 
-        self.objects.iter().filter_map(|obj| { obj.intersect(&ray) }).min_by(|a, b| a.hit.distance.total_cmp(&b.hit.distance))
+        self.objects.iter()
+            .filter_map(|obj| { obj.intersect(&ray) })
+            .min_by(|a, b| a.hit.distance.total_cmp(&b.hit.distance))
     }
 
     fn render_color(&self, oh: &ObjectHit) -> RGBA {

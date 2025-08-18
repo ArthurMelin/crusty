@@ -10,11 +10,14 @@ pub struct Object {
     inner: Box<dyn ObjectType + Send + Sync>,
 }
 
+#[derive(Clone, Copy)]
 pub struct ObjectHit<'a> {
+    pub ray: Ray,
     pub object: &'a Object,
     pub hit: Hit,
 }
 
+#[derive(Clone, Copy)]
 pub struct Hit {
     pub distance: f64,
     pub intersection: (f64, f64, f64),
@@ -45,7 +48,11 @@ impl Object {
                 hit.intersection = self.transform.apply(hit.intersection);
                 hit.normal = vec3norm(self.transform.apply_notranslate(hit.normal));
 
-                Some(ObjectHit { object: self, hit })
+                Some(ObjectHit {
+                    ray: *ray,
+                    object: self,
+                    hit,
+                })
             }
             _ => None,
         }
