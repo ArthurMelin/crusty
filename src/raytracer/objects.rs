@@ -123,7 +123,7 @@ impl ObjectType for Cone {
         };
         let uv = (
             0.5 - f64::atan2(intersection.0, intersection.1) / (2.0 * PI),
-            0.5 - intersection.2,
+            intersection.2 + 0.5,
         );
 
         Some(Hit {
