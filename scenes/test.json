@@ -1,0 +1,44 @@
+{
+  "output": {
+    "width": 2560,
+    "height": 1440
+  },
+  "camera": {
+    "transform": {
+      "translate": [0, -30, 10],
+      "rotate": [-18, 0, 0]
+    }
+  },
+  "objects": [
+    {
+      "type": "plane",
+      "transform": {
+        "scale": [10, 10, 1]
+      }
+    },
+    {
+      "type": "cube",
+      "transform": {
+        "translate": [-3, 0, 0.5]
+      }
+    },
+    {
+      "type": "sphere",
+      "transform": {
+        "translate": [-1, 0, 0.5]
+      }
+    },
+    {
+      "type": "cylinder",
+      "transform": {
+        "translate": [1, 0, 0.5]
+      }
+    },
+    {
+      "type": "cone",
+      "transform": {
+        "translate": [3, 0, 0.5]
+      }
+    }
+  ]
+}

@@ -6,13 +6,20 @@ use sdl2::keyboard::Keycode;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, ScaleMode};
+use std::fs;
 
-fn main() {
-    let raytracer = Raytracer::new();
-    let render_thread = raytracer.start();
+fn main() -> Result<(), String> {
+    // TODO argparse
+    let scene_path = "scenes/test.json";
+    let threads = 8u32;
 
-    let sdl = sdl2::init().unwrap();
-    let sdl_video = sdl.video().unwrap();
+    let scene_file = fs::File::open(scene_path).map_err(|err| format!("Failed to open scene file: {}", err))?;
+
+    let raytracer = Raytracer::new(scene_file)?;
+    let render_thread = raytracer.start(threads);
+
+    let sdl = sdl2::init()?;
+    let sdl_video = sdl.video()?;
 
     let window = sdl_video
         .window("Crusty", 1280, 720)
@@ -110,4 +117,6 @@ fn main() {
 
     raytracer.stop();
     render_thread.join().unwrap();
+
+    Ok(())
 }

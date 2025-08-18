@@ -1,14 +1,36 @@
+use crate::raytracer::{Ray, Transform};
+use crate::raytracer::utils::{vec3add, vec3norm, vec3scale};
 use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::sync::LazyLock;
 
-use crate::raytracer::{Ray, Transform};
-use crate::raytracer::utils::{vec3add, vec3norm, vec3scale};
+const HALF_EPSILON: f64 = 0.49999999;
+
+static OBJECT_TYPES: LazyLock<HashMap<String, fn() -> Box<dyn ObjectType + Sync + Send>>> =
+    LazyLock::new(|| {
+        HashMap::from([
+            ("cone".to_string(), (|| { Box::new(Cone) }) as fn() -> Box<dyn ObjectType + Sync + Send>),
+            ("cube".to_string(), || { Box::new(Cube) }),
+            ("cylinder".to_string(), || { Box::new(Cylinder) }),
+            ("plane".to_string(), || { Box::new(Plane) }),
+            ("sphere".to_string(), || { Box::new(Sphere) }),
+        ])
+    });
 
 pub struct Object {
     transform: Transform,
     inner: Box<dyn ObjectType + Send + Sync>,
 }
+
+pub trait ObjectType {
+    fn intersect(&self, ray: &Ray) -> Option<Hit>;
+}
+
+struct Cone;
+struct Cube;
+struct Cylinder;
+struct Plane;
+struct Sphere;
 
 #[derive(Clone, Copy)]
 pub struct ObjectHit<'a> {
@@ -26,14 +48,13 @@ pub struct Hit {
 }
 
 impl Object {
-    pub fn new(type_: &'static str, transform: Transform) -> Result<Object, &'static str> {
-        // TODO
-        match OBJECT_TYPES.get(type_) {
+    pub fn new(type_name: &String, transform: Transform) -> Result<Object, String> {
+        match OBJECT_TYPES.get(type_name) {
             Some(object_new_fn) => Ok(Object {
                 transform,
                 inner: object_new_fn(),
             }),
-            _ => Err("object type not found"),
+            _ => Err(format!("Object type {} not found", type_name)),
         }
     }
 
@@ -58,29 +79,6 @@ impl Object {
         }
     }
 }
-
-pub trait ObjectType {
-    fn intersect(&self, ray: &Ray) -> Option<Hit>;
-}
-
-static OBJECT_TYPES: LazyLock<HashMap<String, fn() -> Box<dyn ObjectType + Sync + Send>>> =
-    LazyLock::new(|| {
-        HashMap::from([
-            ("cone".to_string(), (|| { Box::new(Cone) }) as fn() -> Box<dyn ObjectType + Sync + Send>),
-            ("cube".to_string(), || { Box::new(Cube) }),
-            ("cylinder".to_string(), || { Box::new(Cylinder) }),
-            ("plane".to_string(), || { Box::new(Plane) }),
-            ("sphere".to_string(), || { Box::new(Sphere) }),
-        ])
-    });
-
-struct Cone;
-struct Cube;
-struct Cylinder;
-struct Plane;
-struct Sphere;
-
-const HALF_EPSILON: f64 = 0.49999999;
 
 impl ObjectType for Cone {
     fn intersect(&self, ray: &Ray) -> Option<Hit> {

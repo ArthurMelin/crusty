@@ -1,4 +1,5 @@
 mod objects;
+mod scene;
 mod tile;
 mod transform;
 mod utils;
@@ -11,33 +12,31 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use objects::{Object, ObjectHit};
+use scene::Scene;
 use tile::Tile;
 use transform::Transform;
 use utils::vec3norm;
 
-// const OUTPUT_W: u32 = 16;
-// const OUTPUT_H: u32 = 9;
-// const THREADS: u32 = 1;
-const OUTPUT_W: u32 = 2560;
-const OUTPUT_H: u32 = 1440;
-const THREADS: u32 = 8;
-const TILE_SIZE: u32 = 16;
-const CAMERA_FOV: f64 = 90.0;
-const CAMERA_NEAR: f64 = 10.0;
-
 pub struct Raytracer {
-    objects: Vec<Object>,
+    scene: Scene,
+    camera: Camera,
     output: Vec<AtomicU8>,
-    output_sz: (u32, u32),
+    objects: Vec<Object>,
     progress: AtomicU32,
     stop: AtomicBool,
     tiles: Mutex<VecDeque<Tile>>,
 }
 
+struct Camera {
+    fov: f64,
+    near: f64,
+    transform: Transform,
+}
+
 #[derive(Clone, Copy)]
-struct Ray {
-    origin: (f64, f64, f64),
-    direction: (f64, f64, f64),
+pub struct Ray {
+    pub origin: (f64, f64, f64),
+    pub direction: (f64, f64, f64),
 }
 
 struct RGBA {
@@ -48,37 +47,44 @@ struct RGBA {
 }
 
 impl Raytracer {
-    pub fn new() -> Arc<Self> {
-        // TODO load objects and settings from a scene file
-        let mut objects = Vec::<Object>::new();
+    pub fn new<R>(reader: R) -> Result<Arc<Self>, String>
+    where
+        R: std::io::Read
+    {
+        let scene: Scene = serde_json::from_reader(reader)
+            .map_err(|err| format!("Failed to parse scene: {}", err))?;
 
-        objects.push(Object::new("plane", Transform::new().scale(10.0, 10.0, 1.0)).unwrap());
-        objects.push(Object::new("cube", Transform::new().translate(-3.0, 0.0, 0.5)).unwrap());
-        objects.push(Object::new("sphere", Transform::new().translate(-1.0, 0.0, 0.5)).unwrap());
-        objects.push(Object::new("cylinder", Transform::new().translate(1.0, 0.0, 0.5)).unwrap());
-        objects.push(Object::new("cone", Transform::new().translate(3.0, 0.0, 0.5)).unwrap());
+        let camera = Camera::from(&scene.camera);
 
-        let output_sz = (OUTPUT_W, OUTPUT_H);
+        let output = vec![0u8; (4 * scene.output.width * scene.output.height) as usize].into_iter()
+            .map(AtomicU8::new)
+            .collect();
 
-        Arc::new(Self {
+        let objects: Vec<Object> = scene.objects.iter()
+            .map(|scene_object| { Object::try_from(scene_object) })
+            .collect::<Result<Vec<Object>, String>>()?;
+
+        Ok(Arc::new(Self {
+            scene,
+            camera,
+            output,
             objects,
-            output: vec![0u8; (4 * output_sz.0 * output_sz.1) as usize].into_iter().map(AtomicU8::new).collect(),
-            output_sz,
             stop: AtomicBool::new(false),
             progress: AtomicU32::new(0),
             tiles: Mutex::new(VecDeque::new()),
-        })
+        }))
     }
 
-    pub fn start(self: &Arc<Self>) -> JoinHandle<()> {
+    pub fn start(self: &Arc<Self>, threads: u32) -> JoinHandle<()> {
         let clone = self.clone();
         thread::Builder::new()
             .name("Raytracer".to_string())
             .spawn(move || {
                 {
+                    let output = &clone.scene.output;
                     let mut tiles = clone.tiles.lock().unwrap();
                     tiles.clear();
-                    for tile in tile::hilbert_tiles(clone.output_sz.0, clone.output_sz.1, TILE_SIZE) {
+                    for tile in tile::hilbert_tiles(output.width, output.height, output.tile_size) {
                         tiles.push_front(tile);
                     }
                 }
@@ -86,7 +92,7 @@ impl Raytracer {
                 println!("Render starting");
                 let start = Instant::now();
 
-                let threads = (0..THREADS)
+                let threads = (0..threads)
                     .map(|i| clone.start_worker(i + 1))
                     .collect::<Vec<JoinHandle<()>>>();
                 threads.into_iter().for_each(|t| t.join().unwrap());
@@ -133,12 +139,12 @@ impl Raytracer {
 
     #[inline]
     pub fn output_sz(self: &Arc<Self>) -> (u32, u32) {
-        self.output_sz
+        (self.scene.output.width, self.scene.output.height)
     }
 
     #[inline]
     pub fn progress(self: &Arc<Self>) -> f64 {
-        self.progress.load(Ordering::Relaxed) as f64 / (self.output_sz.0 * self.output_sz.1) as f64
+        self.progress.load(Ordering::Relaxed) as f64 / (self.scene.output.width * self.scene.output.height) as f64
     }
 
     fn work(self: &Arc<Self>, tile: Tile) {
@@ -151,7 +157,7 @@ impl Raytracer {
                     Some(hit) => {
                         let color = self.render_color(&hit);
 
-                        let off = 4 * (x + y * self.output_sz.0) as usize;
+                        let off = 4 * (x + y * self.scene.output.width) as usize;
                         self.output[off].store(color.a, Ordering::Relaxed);
                         self.output[off + 1].store(color.b, Ordering::Relaxed);
                         self.output[off + 2].store(color.g, Ordering::Relaxed);
@@ -165,19 +171,15 @@ impl Raytracer {
     }
 
     fn raytrace(&self, x: u32, y: u32) -> Option<ObjectHit> {
-        let camera_tf = Transform::new()
-            .translate(0.0, -30.0, 10.0)
-            .rotate(-18.0, 0.0, 0.0);
-
         let ray = Ray {
-            origin: camera_tf.apply((0.0, 0.0, 0.0)),
-            direction: camera_tf.apply_notranslate(vec3norm((
-                (2.0 * (x as f64 + 0.5) / self.output_sz.0 as f64 - 1.0) *
-                    (CAMERA_FOV.to_radians() / 2.0).tan() *
-                    (self.output_sz.0 as f64 / self.output_sz.1 as f64),
-                CAMERA_NEAR,
-                (1.0 - 2.0 * (y as f64 + 0.5) / self.output_sz.1 as f64) *
-                    (CAMERA_FOV.to_radians() / 2.0).tan(),
+            origin: self.camera.transform.apply((0.0, 0.0, 0.0)),
+            direction: self.camera.transform.apply_notranslate(vec3norm((
+                (2.0 * (x as f64 + 0.5) / self.scene.output.width as f64 - 1.0) *
+                    (self.camera.fov.to_radians() / 2.0).tan() *
+                    (self.scene.output.width as f64 / self.scene.output.height as f64),
+                self.camera.near,
+                (1.0 - 2.0 * (y as f64 + 0.5) / self.scene.output.height as f64) *
+                    (self.camera.fov.to_radians() / 2.0).tan(),
             ))),
         };
 
