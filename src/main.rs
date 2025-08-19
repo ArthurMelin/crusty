@@ -37,8 +37,8 @@ fn main() -> Result<(), String> {
     let mut texture = texture_creator
         .create_texture_streaming(
             PixelFormatEnum::RGBA8888,
-            raytracer.output_sz().0,
-            raytracer.output_sz().1,
+            raytracer.output().width,
+            raytracer.output().height,
         )
         .unwrap();
     texture.set_blend_mode(BlendMode::Blend);
@@ -84,12 +84,12 @@ fn main() -> Result<(), String> {
 
         // TODO: it would be more efficient to use texture.with_lock / texture streaming, but this is good enough™ for now
         texture
-            .update(None, raytracer.output(), 4 * raytracer.output_sz().0 as usize)
+            .update(None, raytracer.output().get(), 4 * raytracer.output().width as usize)
             .unwrap();
 
         // Calculate the sizes and offsets to fit the texture to the window size (preserving the aspect ratio).
         let window_sz = (window_sz.0 as f64, window_sz.1 as f64);
-        let output_sz = (raytracer.output_sz().0 as f64, raytracer.output_sz().1 as f64);
+        let output_sz = (raytracer.output().width as f64, raytracer.output().height as f64);
         let display_sz = if window_sz.0 / window_sz.1 > output_sz.0 / output_sz.1 {
             (output_sz.0 * window_sz.1 / output_sz.1, window_sz.1)
         } else {

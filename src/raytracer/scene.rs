@@ -1,4 +1,4 @@
-use crate::raytracer::Camera;
+use crate::raytracer::{Camera, Output};
 use crate::raytracer::objects::Object;
 use crate::raytracer::transform::Transform;
 use serde::Deserialize;
@@ -13,40 +13,40 @@ pub struct Scene {
 #[derive(Deserialize)]
 pub struct SceneCamera {
     #[serde(default = "default_camera_fov")]
-    pub fov: f64,
+    fov: f64,
     #[serde(default = "default_camera_near")]
-    pub near: f64,
-    pub transform: SceneTransform,
+    near: f64,
+    transform: SceneTransform,
 }
 
 #[derive(Deserialize)]
 pub struct SceneOutput {
-    pub width: u32,
-    pub height: u32,
+    width: u32,
+    height: u32,
     #[serde(default = "default_output_tile_size")]
-    pub tile_size: u32,
+    tile_size: u32,
 }
 
 #[derive(Deserialize)]
 pub struct SceneObject {
     #[serde(rename = "type")]
-    pub type_name: String,
-    pub transform: SceneTransform,
+    type_name: String,
+    transform: SceneTransform,
 }
 
 #[derive(Deserialize)]
 pub struct SceneTransform {
     #[serde(default)]
-    pub translate: [f64; 3],
+    translate: [f64; 3],
     #[serde(default)]
-    pub rotate: [f64; 3],
+    rotate: [f64; 3],
     #[serde(default = "default_transform_scale")]
-    pub scale: [f64; 3],
+    scale: [f64; 3],
 }
 
 impl From<&SceneCamera> for Camera {
-    fn from(scene_camera: &SceneCamera) -> Camera {
-        Camera {
+    fn from(scene_camera: &SceneCamera) -> Self {
+        Self {
             fov: scene_camera.fov,
             near: scene_camera.near,
             transform: Transform::from(&scene_camera.transform),
@@ -54,20 +54,26 @@ impl From<&SceneCamera> for Camera {
     }
 }
 
+impl From<&SceneOutput> for Output {
+    fn from(scene_output: &SceneOutput) -> Self {
+        Self::new(scene_output.width, scene_output.height, scene_output.tile_size)
+    }
+}
+
 impl TryFrom<&SceneObject> for Object {
     type Error = String;
 
-    fn try_from(scene_object: &SceneObject) -> Result<Object, Self::Error> {
-        Object::new(&scene_object.type_name, Transform::from(&scene_object.transform))
+    fn try_from(scene_object: &SceneObject) -> Result<Self, Self::Error> {
+        Self::new(&scene_object.type_name, Transform::from(&scene_object.transform))
     }
 }
 
 impl From<&SceneTransform> for Transform {
-    fn from(scene_transform: &SceneTransform) -> Transform {
+    fn from(scene_transform: &SceneTransform) -> Self {
         let [tx, ty, tz] = scene_transform.translate;
         let [rx, ry, rz] = scene_transform.rotate;
         let [sx, sy, sz] = scene_transform.scale;
-        Transform::new()
+        Self::new()
             .translate(tx, ty, tz)
             .rotate(rx, ry, rz)
             .scale(sx, sy, sz)

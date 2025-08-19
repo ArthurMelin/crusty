@@ -18,9 +18,8 @@ use transform::Transform;
 use utils::vec3norm;
 
 pub struct Raytracer {
-    scene: Scene,
     camera: Camera,
-    output: Vec<AtomicU32>,
+    output: Output,
     objects: Vec<Object>,
     progress: AtomicU32,
     stop: AtomicBool,
@@ -31,6 +30,13 @@ struct Camera {
     fov: f64,
     near: f64,
     transform: Transform,
+}
+
+pub struct Output {
+    pub width: u32,
+    pub height: u32,
+    tile_size: u32,
+    buffer: Vec<AtomicU32>,
 }
 
 #[derive(Clone, Copy)]
@@ -54,21 +60,12 @@ impl Raytracer {
         let scene: Scene = serde_json::from_reader(reader)
             .map_err(|err| format!("Failed to parse scene: {}", err))?;
 
-        let camera = Camera::from(&scene.camera);
-
-        let output = vec![0u32; (scene.output.width * scene.output.height) as usize].into_iter()
-            .map(AtomicU32::new)
-            .collect();
-
-        let objects: Vec<Object> = scene.objects.iter()
-            .map(|scene_object| { Object::try_from(scene_object) })
-            .collect::<Result<Vec<Object>, String>>()?;
-
         Ok(Arc::new(Self {
-            scene,
-            camera,
-            output,
-            objects,
+            camera: Camera::from(&scene.camera),
+            output: Output::from(&scene.output),
+            objects: scene.objects.iter()
+                .map(|scene_object| { Object::try_from(scene_object) })
+                .collect::<Result<Vec<Object>, String>>()?,
             stop: AtomicBool::new(false),
             progress: AtomicU32::new(0),
             tiles: Mutex::new(VecDeque::new()),
@@ -81,7 +78,7 @@ impl Raytracer {
             .name("Raytracer".to_string())
             .spawn(move || {
                 {
-                    let output = &clone.scene.output;
+                    let output = &clone.output;
                     let mut tiles = clone.tiles.lock().unwrap();
                     tiles.clear();
                     for tile in tile::hilbert_tiles(output.width, output.height, output.tile_size) {
@@ -133,18 +130,13 @@ impl Raytracer {
     }
 
     #[inline]
-    pub fn output(self: &Arc<Self>) -> &[u8] {
-        unsafe { &*(self.output.as_slice() as *const [AtomicU32] as *const [u8]) }
-    }
-
-    #[inline]
-    pub fn output_sz(self: &Arc<Self>) -> (u32, u32) {
-        (self.scene.output.width, self.scene.output.height)
+    pub fn output(self: &Arc<Self>) -> &Output {
+        &self.output
     }
 
     #[inline]
     pub fn progress(self: &Arc<Self>) -> f64 {
-        self.progress.load(Ordering::Relaxed) as f64 / (self.scene.output.width * self.scene.output.height) as f64
+        self.progress.load(Ordering::Relaxed) as f64 / (self.output.width * self.output.height) as f64
     }
 
     fn work(self: &Arc<Self>, tile: Tile) {
@@ -157,7 +149,7 @@ impl Raytracer {
                     Some(hit) => {
                         let color = self.render_color(&hit);
 
-                        self.output[(x + y * self.scene.output.width) as usize].store(color.into(), Ordering::Relaxed);
+                        self.output.put(x, y, color);
                     }
                     None => {}
                 }
@@ -170,11 +162,11 @@ impl Raytracer {
         let ray = Ray {
             origin: self.camera.transform.apply((0.0, 0.0, 0.0)),
             direction: self.camera.transform.apply_notranslate(vec3norm((
-                (2.0 * (x as f64 + 0.5) / self.scene.output.width as f64 - 1.0) *
+                (2.0 * (x as f64 + 0.5) / self.output.width as f64 - 1.0) *
                     (self.camera.fov.to_radians() / 2.0).tan() *
-                    (self.scene.output.width as f64 / self.scene.output.height as f64),
+                    (self.output.width as f64 / self.output.height as f64),
                 self.camera.near,
-                (1.0 - 2.0 * (y as f64 + 0.5) / self.scene.output.height as f64) *
+                (1.0 - 2.0 * (y as f64 + 0.5) / self.output.height as f64) *
                     (self.camera.fov.to_radians() / 2.0).tan(),
             ))),
         };
@@ -191,6 +183,23 @@ impl Raytracer {
         } else {
             RGBA::new(0, 0, 0, 255)
         }
+    }
+}
+
+impl Output {
+    fn new(width: u32, height: u32, tile_size: u32) -> Output {
+        Output {
+            width,
+            height,
+            tile_size,
+            buffer: vec![0u32; (width * height) as usize].into_iter().map(AtomicU32::new).collect(),
+        }
+    }
+    pub fn get(&self) -> &[u8] {
+        unsafe { &*(self.buffer.as_slice() as *const [AtomicU32] as *const [u8]) }
+    }
+    fn put(&self, x: u32, y: u32, color: RGBA) {
+        self.buffer[(x + y * self.width) as usize].store(color.into(), Ordering::Relaxed)
     }
 }
 
