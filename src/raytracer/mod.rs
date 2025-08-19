@@ -5,7 +5,7 @@ mod transform;
 mod utils;
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
@@ -20,7 +20,7 @@ use utils::vec3norm;
 pub struct Raytracer {
     scene: Scene,
     camera: Camera,
-    output: Vec<AtomicU8>,
+    output: Vec<AtomicU32>,
     objects: Vec<Object>,
     progress: AtomicU32,
     stop: AtomicBool,
@@ -56,8 +56,8 @@ impl Raytracer {
 
         let camera = Camera::from(&scene.camera);
 
-        let output = vec![0u8; (4 * scene.output.width * scene.output.height) as usize].into_iter()
-            .map(AtomicU8::new)
+        let output = vec![0u32; (scene.output.width * scene.output.height) as usize].into_iter()
+            .map(AtomicU32::new)
             .collect();
 
         let objects: Vec<Object> = scene.objects.iter()
@@ -134,7 +134,7 @@ impl Raytracer {
 
     #[inline]
     pub fn output(self: &Arc<Self>) -> &[u8] {
-        unsafe { &*(self.output.as_slice() as *const [AtomicU8] as *const [u8]) }
+        unsafe { &*(self.output.as_slice() as *const [AtomicU32] as *const [u8]) }
     }
 
     #[inline]
@@ -157,11 +157,7 @@ impl Raytracer {
                     Some(hit) => {
                         let color = self.render_color(&hit);
 
-                        let off = 4 * (x + y * self.scene.output.width) as usize;
-                        self.output[off].store(color.a, Ordering::Relaxed);
-                        self.output[off + 1].store(color.b, Ordering::Relaxed);
-                        self.output[off + 2].store(color.g, Ordering::Relaxed);
-                        self.output[off + 3].store(color.r, Ordering::Relaxed);
+                        self.output[(x + y * self.scene.output.width) as usize].store(color.into(), Ordering::Relaxed);
                     }
                     None => {}
                 }
@@ -202,5 +198,11 @@ impl RGBA {
     #[inline]
     fn new(r: u8, g: u8, b: u8, a: u8) -> RGBA {
         RGBA { r, g, b, a }
+    }
+}
+
+impl Into<u32> for RGBA {
+    fn into(self) -> u32 {
+        (self.r as u32) << 24 | (self.g as u32) << 16 | (self.b as u32) << 8 | self.a as u32
     }
 }
