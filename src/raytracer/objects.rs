@@ -1,25 +1,27 @@
 use crate::raytracer::{Ray, Transform};
 use crate::raytracer::utils::{vec3add, vec3norm, vec3scale};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::f64::consts::PI;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 const HALF_EPSILON: f64 = 0.49999999;
 
-static OBJECT_TYPES: LazyLock<HashMap<String, fn() -> Box<dyn ObjectType + Sync + Send>>> =
-    LazyLock::new(|| {
-        HashMap::from([
-            ("cone".to_string(), (|| { Box::new(Cone) }) as fn() -> Box<dyn ObjectType + Sync + Send>),
-            ("cube".to_string(), || { Box::new(Cube) }),
-            ("cylinder".to_string(), || { Box::new(Cylinder) }),
-            ("plane".to_string(), || { Box::new(Plane) }),
-            ("sphere".to_string(), || { Box::new(Sphere) }),
-        ])
-    });
+static OBJECT_TYPES: LazyLock<Mutex<HashMap<String, ObjectNewFn>>> =
+    LazyLock::new(|| Mutex::new(HashMap::from([
+        ("cone".to_string(), (|_| Ok(Box::new(Cone))) as ObjectNewFn),
+        ("cube".to_string(), |_| Ok(Box::new(Cube))),
+        ("cylinder".to_string(), |_| Ok(Box::new(Cylinder))),
+        ("plane".to_string(), |_| Ok(Box::new(Plane))),
+        ("sphere".to_string(), |_| Ok(Box::new(Sphere))),
+    ])));
+
+type ObjectNewFn = fn(&Value) -> Result<Box<dyn ObjectType + Sync + Send>, String>;
 
 pub struct Object {
+    inner: Box<dyn ObjectType + Sync + Send>,
     transform: Transform,
-    inner: Box<dyn ObjectType + Send + Sync>,
+    pub(crate) material: String,
 }
 
 pub trait ObjectType {
@@ -48,22 +50,31 @@ pub struct Hit {
 }
 
 impl Object {
-    pub fn new(type_name: &String, transform: Transform) -> Result<Object, String> {
-        match OBJECT_TYPES.get(type_name) {
-            Some(object_new_fn) => Ok(Object {
-                transform,
-                inner: object_new_fn(),
-            }),
-            _ => Err(format!("Object type {} not found", type_name)),
-        }
+    pub fn register_type(name: String, new_fn: ObjectNewFn) {
+        let mut types = OBJECT_TYPES.lock().unwrap();
+        types.insert(name, new_fn);
+    }
+
+    pub fn new(type_name: &String, data: &Value, transform: Transform, material: &String) -> Result<Self, String> {
+        let types = OBJECT_TYPES.lock().unwrap();
+        let inner = match types.get(type_name) {
+            Some(object_new_fn) => object_new_fn(data),
+            None => Err(format!("Could not find object type {}", type_name)),
+        }?;
+
+        Ok(Self {
+            inner,
+            transform,
+            material: material.clone(),
+        })
     }
 
     pub fn intersect(&self, ray: &Ray) -> Option<ObjectHit> {
-        let tmp = Ray {
-            origin: self.transform.inverse().apply(ray.origin),
-            direction: self.transform.inverse().apply_notranslate(ray.direction),
-        };
-        match self.inner.intersect(&tmp) {
+        let mut local_ray = ray.clone();
+        local_ray.origin = self.transform.inverse().apply(ray.origin);
+        local_ray.direction = self.transform.inverse().apply_notranslate(ray.direction);
+
+        match self.inner.intersect(&local_ray) {
             Some(hit) => {
                 let mut hit = hit;
                 hit.intersection = self.transform.apply(hit.intersection);
@@ -281,7 +292,7 @@ impl ObjectType for Sphere {
 }
 
 #[inline]
-fn solve_linear(a: f64, b: f64, c: f64) -> f64 {
+pub fn solve_linear(a: f64, b: f64, c: f64) -> f64 {
     let delta = b * b - 4.0 * a * c;
     match delta {
         f64::EPSILON.. => f64::min(
@@ -293,6 +304,6 @@ fn solve_linear(a: f64, b: f64, c: f64) -> f64 {
     }
 }
 
-fn intersection(ray: &Ray, distance: f64) -> (f64, f64, f64) {
+pub fn intersection(ray: &Ray, distance: f64) -> (f64, f64, f64) {
     vec3add(vec3scale(ray.direction, distance), ray.origin)
 }

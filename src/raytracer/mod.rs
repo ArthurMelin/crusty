@@ -1,25 +1,30 @@
+mod materials;
 mod objects;
 mod scene;
 mod tile;
 mod transform;
 mod utils;
 
-use std::collections::VecDeque;
+use rand;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::ptr;
 use std::thread;
-use std::thread::JoinHandle;
 use std::time::Instant;
 
-use objects::{Object, ObjectHit};
+use materials::Material;
+use objects::Object;
 use scene::Scene;
 use tile::Tile;
 use transform::Transform;
 use utils::vec3norm;
+use crate::raytracer::materials::FALLBACK;
 
 pub struct Raytracer {
     camera: Camera,
     output: Output,
+    materials: HashMap<String, Material>,
     objects: Vec<Object>,
     progress: AtomicU32,
     stop: AtomicBool,
@@ -35,21 +40,28 @@ struct Camera {
 pub struct Output {
     pub width: u32,
     pub height: u32,
+    samples: u32,
     tile_size: u32,
     buffer: Vec<AtomicU32>,
 }
 
 #[derive(Clone, Copy)]
 pub struct Ray {
+    pub ray_type: RayType,
     pub origin: (f64, f64, f64),
     pub direction: (f64, f64, f64),
 }
 
 struct RGBA {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+}
+
+#[derive(Clone, Copy)]
+pub enum RayType {
+    Camera,
 }
 
 impl Raytracer {
@@ -60,19 +72,26 @@ impl Raytracer {
         let scene: Scene = serde_json::from_reader(reader)
             .map_err(|err| format!("Failed to parse scene: {}", err))?;
 
+        let materials = scene.materials.iter()
+            .map(|(id, scene_material)| Material::try_from(scene_material).map(|mat| (id.clone(), mat)))
+            .collect::<Result<HashMap<String, Material>, String>>()?;
+
+        let objects = scene.objects.iter()
+            .map(|scene_object| Object::try_from(scene_object))
+            .collect::<Result<Vec<Object>, String>>()?;
+
         Ok(Arc::new(Self {
             camera: Camera::from(&scene.camera),
             output: Output::from(&scene.output),
-            objects: scene.objects.iter()
-                .map(|scene_object| { Object::try_from(scene_object) })
-                .collect::<Result<Vec<Object>, String>>()?,
+            materials,
+            objects,
             stop: AtomicBool::new(false),
             progress: AtomicU32::new(0),
             tiles: Mutex::new(VecDeque::new()),
         }))
     }
 
-    pub fn start(self: &Arc<Self>, threads: u32) -> JoinHandle<()> {
+    pub fn start(self: &Arc<Self>, threads: u32) -> thread::JoinHandle<()> {
         let clone = self.clone();
         thread::Builder::new()
             .name("Raytracer".to_string())
@@ -91,7 +110,7 @@ impl Raytracer {
 
                 let threads = (0..threads)
                     .map(|i| clone.start_worker(i + 1))
-                    .collect::<Vec<JoinHandle<()>>>();
+                    .collect::<Vec<_>>();
                 threads.into_iter().for_each(|t| t.join().unwrap());
 
                 if clone.stop.load(Ordering::Relaxed) {
@@ -105,10 +124,10 @@ impl Raytracer {
             .unwrap()
     }
 
-    fn start_worker(self: &Arc<Self>, i: u32) -> JoinHandle<()> {
+    fn start_worker(self: &Arc<Self>, i: u32) -> thread::JoinHandle<()> {
         let clone = self.clone();
         thread::Builder::new()
-            .name(format!("RT-Worker-{i}").to_string())
+            .name(format!("RT-Worker-{i}"))
             .spawn(move || {
                 loop {
                     if clone.stop.load(Ordering::Relaxed) {
@@ -145,52 +164,56 @@ impl Raytracer {
                 if self.stop.load(Ordering::Relaxed) {
                     break;
                 }
-                match self.raytrace(x, y) {
-                    Some(hit) => {
-                        let color = self.render_color(&hit);
 
-                        self.output.put(x, y, color);
-                    }
-                    None => {}
-                }
+                let samples: Vec<RGBA> = (0..self.output.samples)
+                    .map(|_| {
+                        let offset: (f64, f64) = rand::random();
+                        let ray = Ray {
+                            ray_type: RayType::Camera,
+                            origin: self.camera.transform.apply((0.0, 0.0, 0.0)),
+                            direction: self.camera.transform.apply_notranslate(vec3norm((
+                                (2.0 * (x as f64 + offset.0) / self.output.width as f64 - 1.0) *
+                                    (self.camera.fov.to_radians() / 2.0).tan() *
+                                    (self.output.width as f64 / self.output.height as f64),
+                                self.camera.near,
+                                (1.0 - 2.0 * (y as f64 + offset.1) / self.output.height as f64) *
+                                    (self.camera.fov.to_radians() / 2.0).tan(),
+                            ))),
+                        };
+
+                        self.raytrace(ray, None)
+                    })
+                    .collect();
+
+                let color = RGBA::average(&samples);
+                self.output.put(x, y, color);
                 self.progress.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
 
-    fn raytrace(&self, x: u32, y: u32) -> Option<ObjectHit> {
-        let ray = Ray {
-            origin: self.camera.transform.apply((0.0, 0.0, 0.0)),
-            direction: self.camera.transform.apply_notranslate(vec3norm((
-                (2.0 * (x as f64 + 0.5) / self.output.width as f64 - 1.0) *
-                    (self.camera.fov.to_radians() / 2.0).tan() *
-                    (self.output.width as f64 / self.output.height as f64),
-                self.camera.near,
-                (1.0 - 2.0 * (y as f64 + 0.5) / self.output.height as f64) *
-                    (self.camera.fov.to_radians() / 2.0).tan(),
-            ))),
-        };
+    fn raytrace(&self, ray: Ray, ignore: Option<&Object>) -> RGBA {
+        let hit = self.objects.iter()
+            .filter(|object| !ignore.is_some_and(|ignore| ptr::eq(*object, ignore)))
+            .filter_map(|obj| obj.intersect(&ray))
+            .min_by(|a, b| a.hit.distance.total_cmp(&b.hit.distance));
 
-        self.objects.iter()
-            .filter_map(|obj| { obj.intersect(&ray) })
-            .min_by(|a, b| a.hit.distance.total_cmp(&b.hit.distance))
-    }
-
-    fn render_color(&self, oh: &ObjectHit) -> RGBA {
-        // TODO
-        if ((oh.hit.uv.0 * 20.0) as u8 % 2) ^ ((oh.hit.uv.1 * 20.0) as u8 % 2) == 0 {
-            RGBA::new((oh.hit.uv.0 * 256.0) as u8, 0, (oh.hit.uv.1 * 256.0) as u8, 255)
-        } else {
-            RGBA::new(0, 0, 0, 255)
+        match hit {
+            Some(hit) => {
+                let material = self.materials.get(&hit.object.material).or(Some(&FALLBACK)).unwrap();
+                material.shade(&hit, Box::new(|ray| self.raytrace(ray, Some(hit.object))))
+            },
+            None => RGBA::transparent(),
         }
     }
 }
 
 impl Output {
-    fn new(width: u32, height: u32, tile_size: u32) -> Output {
+    fn new(width: u32, height: u32, samples: u32, tile_size: u32) -> Output {
         Output {
             width,
             height,
+            samples,
             tile_size,
             buffer: vec![0u32; (width * height) as usize].into_iter().map(AtomicU32::new).collect(),
         }
@@ -204,14 +227,35 @@ impl Output {
 }
 
 impl RGBA {
-    #[inline]
-    fn new(r: u8, g: u8, b: u8, a: u8) -> RGBA {
-        RGBA { r, g, b, a }
+    fn new(r: f64, g: f64, b: f64, a: f64) -> Self {
+        Self { r, g, b, a }
+    }
+
+    fn transparent() -> Self { Self::new(0.0, 0.0, 0.0, 0.0) }
+    fn black() -> Self { Self::new(0.0, 0.0, 0.0, 1.0) }
+    fn white() -> Self { Self::new(1.0, 1.0, 1.0, 1.0) }
+
+    fn average(samples: &Vec<RGBA>) -> RGBA {
+        let ssum = samples
+            .iter()
+            .fold((0.0, 0.0, 0.0, 0.0), |acc, s| (
+                acc.0 + s.r * s.r * s.a,
+                acc.1 + s.g * s.g * s.a,
+                acc.2 + s.b * s.b * s.a,
+                acc.3 + s.a,
+            ));
+
+        RGBA::new(
+            (ssum.0 / ssum.3).sqrt(),
+            (ssum.1 / ssum.3).sqrt(),
+            (ssum.2 / ssum.3).sqrt(),
+            ssum.3 / samples.len() as f64,
+        )
     }
 }
 
 impl Into<u32> for RGBA {
     fn into(self) -> u32 {
-        (self.r as u32) << 24 | (self.g as u32) << 16 | (self.b as u32) << 8 | self.a as u32
+        ((self.r * 255.0) as u32) << 24 | ((self.g * 255.0) as u32) << 16 | ((self.b * 255.0) as u32) << 8 | (self.a * 255.0) as u32
     }
 }

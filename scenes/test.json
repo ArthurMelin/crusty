@@ -1,7 +1,9 @@
 {
   "output": {
     "width": 2560,
-    "height": 1440
+    "height": 1440,
+    "samples": 4,
+    "tile_size": 32
   },
   "camera": {
     "transform": {
@@ -9,6 +11,7 @@
       "rotate": [-18, 0, 0]
     }
   },
+  "materials": {},
   "objects": [
     {
       "type": "plane",

@@ -7,11 +7,12 @@ use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, ScaleMode};
 use std::fs;
+use std::thread;
 
 fn main() -> Result<(), String> {
     // TODO argparse
     let scene_path = "scenes/test.json";
-    let threads = 8u32;
+    let threads = thread::available_parallelism().map_err(|err| err.to_string())?.get() as u32;
 
     let scene_file = fs::File::open(scene_path).map_err(|err| format!("Failed to open scene file: {}", err))?;
 
