@@ -19,12 +19,10 @@ use scene::Scene;
 use tile::Tile;
 use transform::Transform;
 use utils::vec3norm;
-use crate::raytracer::materials::FALLBACK;
 
 pub struct Raytracer {
     camera: Camera,
     output: Output,
-    materials: HashMap<String, Material>,
     objects: Vec<Object>,
     progress: AtomicU32,
     stop: AtomicBool,
@@ -73,18 +71,15 @@ impl Raytracer {
             .map_err(|err| format!("Failed to parse scene: {}", err))?;
 
         let materials = scene.materials.iter()
-            .map(|(id, scene_material)| Material::try_from(scene_material).map(|mat| (id.clone(), mat)))
-            .collect::<Result<HashMap<String, Material>, String>>()?;
-
-        let objects = scene.objects.iter()
-            .map(|scene_object| Object::try_from(scene_object))
-            .collect::<Result<Vec<Object>, String>>()?;
+            .map(|(id, scene_material)| Material::try_from(scene_material).map(|mat| (id.clone(), Arc::new(mat))))
+            .collect::<Result<HashMap<String, Arc<Material>>, String>>()?;
 
         Ok(Arc::new(Self {
             camera: Camera::from(&scene.camera),
             output: Output::from(&scene.output),
-            materials,
-            objects,
+            objects: scene.objects.iter()
+                .map(|scene_object| Object::try_from(scene_object, &materials))
+                .collect::<Result<Vec<Object>, String>>()?,
             stop: AtomicBool::new(false),
             progress: AtomicU32::new(0),
             tiles: Mutex::new(VecDeque::new()),
@@ -199,10 +194,7 @@ impl Raytracer {
             .min_by(|a, b| a.hit.distance.total_cmp(&b.hit.distance));
 
         match hit {
-            Some(hit) => {
-                let material = self.materials.get(&hit.object.material).or(Some(&FALLBACK)).unwrap();
-                material.shade(&hit, Box::new(|ray| self.raytrace(ray, Some(hit.object))))
-            },
+            Some(hit) => hit.object.material().shade(&hit, Box::new(|ray| self.raytrace(ray, Some(hit.object)))),
             None => RGBA::transparent(),
         }
     }

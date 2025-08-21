@@ -1,9 +1,10 @@
 use crate::raytracer::{Ray, Transform};
+use crate::raytracer::materials::Material;
 use crate::raytracer::utils::{vec3add, vec3norm, vec3scale};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::f64::consts::PI;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 const HALF_EPSILON: f64 = 0.49999999;
 
@@ -21,7 +22,7 @@ type ObjectNewFn = fn(&Value) -> Result<Box<dyn ObjectType + Sync + Send>, Strin
 pub struct Object {
     inner: Box<dyn ObjectType + Sync + Send>,
     transform: Transform,
-    pub(crate) material: String,
+    material: Arc<Material>,
 }
 
 pub trait ObjectType {
@@ -55,7 +56,7 @@ impl Object {
         types.insert(name, new_fn);
     }
 
-    pub fn new(type_name: &String, data: &Value, transform: Transform, material: &String) -> Result<Self, String> {
+    pub fn new(type_name: &String, data: &Value, transform: Transform, material: Arc<Material>) -> Result<Self, String> {
         let types = OBJECT_TYPES.lock().unwrap();
         let inner = match types.get(type_name) {
             Some(object_new_fn) => object_new_fn(data),
@@ -65,8 +66,12 @@ impl Object {
         Ok(Self {
             inner,
             transform,
-            material: material.clone(),
+            material,
         })
+    }
+
+    pub fn material(&self) -> &Material {
+        &self.material
     }
 
     pub fn intersect(&self, ray: &Ray) -> Option<ObjectHit> {

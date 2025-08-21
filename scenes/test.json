@@ -2,7 +2,7 @@
   "output": {
     "width": 2560,
     "height": 1440,
-    "samples": 4,
+    "samples": 16,
     "tile_size": 32
   },
   "camera": {

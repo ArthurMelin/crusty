@@ -2,7 +2,7 @@ use crate::raytracer::{Ray, RGBA};
 use crate::raytracer::objects::ObjectHit;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 pub type MaterialNewFn = fn(&Value) -> Result<Box<dyn MaterialType + Sync + Send>, String>;
 
@@ -10,7 +10,7 @@ static MATERIAL_TYPES: LazyLock<Mutex<HashMap<String, MaterialNewFn>>> =
     LazyLock::new(|| Mutex::new(HashMap::from([
     ])));
 
-pub static FALLBACK: LazyLock<Material> = LazyLock::new(|| Material { inner: Box::new(Fallback) } );
+static FALLBACK: LazyLock<Arc<Material>> = LazyLock::new(|| Arc::new(Material { inner: Box::new(Fallback) }) );
 
 pub struct Material {
     inner: Box<dyn MaterialType + Send + Sync>,
@@ -38,6 +38,10 @@ impl Material {
         Ok(Material {
             inner,
         })
+    }
+
+    pub fn fallback() -> Arc<Material> {
+        FALLBACK.clone()
     }
 
     pub fn shade<'a>(&self, oh: &'a ObjectHit, raytrace: Box<dyn Fn(Ray) -> RGBA + 'a>) -> RGBA {

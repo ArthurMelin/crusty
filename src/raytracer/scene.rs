@@ -5,6 +5,7 @@ use crate::raytracer::transform::Transform;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub struct Scene {
@@ -47,9 +48,22 @@ pub struct SceneObject {
     type_name: String,
     transform: SceneTransform,
     #[serde(default)]
-    material: String,
+    material: SceneObjectMaterial,
     #[serde(flatten)]
     data: Value,
+}
+
+#[derive(Deserialize)]
+pub enum SceneObjectMaterial {
+    None,
+    MaterialRef(String),
+    Material(SceneMaterial),
+}
+
+impl Default for SceneObjectMaterial {
+    fn default() -> Self {
+        SceneObjectMaterial::None
+    }
 }
 
 #[derive(Deserialize)]
@@ -94,15 +108,22 @@ impl TryFrom<&SceneMaterial> for Material {
     }
 }
 
-impl TryFrom<&SceneObject> for Object {
-    type Error = String;
+impl Object {
+    pub fn try_from(scene_object: &SceneObject, materials: &HashMap<String, Arc<Material>>) -> Result<Self, String> {
+        let material = match &scene_object.material {
+            SceneObjectMaterial::None => Ok(Material::fallback()),
+            SceneObjectMaterial::MaterialRef(name) => match materials.get(name) {
+                Some(material) => Ok(material.clone()),
+                None => Err(format!("Material {} not found", name)),
+            },
+            SceneObjectMaterial::Material(scene_material) => Material::try_from(scene_material).map(|m| Arc::new(m)),
+        }?;
 
-    fn try_from(scene_object: &SceneObject) -> Result<Self, Self::Error> {
         Self::new(
             &scene_object.type_name,
             &scene_object.data,
             Transform::from(&scene_object.transform),
-            &scene_object.material,
+            material,
         )
     }
 }
